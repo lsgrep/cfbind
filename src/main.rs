@@ -12,6 +12,9 @@ struct Args {
     #[arg(short, long)]
     domain: String,
 
+    #[arg(long)]
+    disable_proxy: bool,
+
     #[arg(short, long)]
     api_key: String,
 }
@@ -94,7 +97,7 @@ async fn get_dns_record(zone_id: String, name: String, record_type: String, api_
     return Ok(None);
 }
 
-async fn update_zone(zone_id: String, name: String, content: String, apy_key: String) -> Result<()> {
+async fn update_zone(zone_id: String, name: String, content: String, disable_proxy: &bool, apy_key: String) -> Result<()> {
     let mut url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
     let client = reqwest::Client::new();
     let mut headers = reqwest::header::HeaderMap::new();
@@ -107,7 +110,7 @@ async fn update_zone(zone_id: String, name: String, content: String, apy_key: St
         name: name.to_string(),
         content: content.to_string(),
         record_type: "A".to_string(),
-        proxied: true,
+        proxied: !disable_proxy,
         ttl: 1,
     };
 
@@ -158,14 +161,14 @@ fn parse_root_domain(domain: String) -> Result<String, Error> {
     }
 }
 
-fn create_updater(zone: Option<Zone>, domain: Arc<String>, api_key: Arc<String>) -> JoinHandle<Result<()>> {
+fn create_updater(zone: Option<Zone>, domain: Arc<String>, disable_proxy: Arc<bool>, api_key: Arc<String>) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         if let Some(zone) = zone {
             let zid = zone.id.clone();
             loop {
                 let current_ip = get_current_ip().await.unwrap();
                 println!("{}", current_ip);
-                update_zone(zid.clone(), domain.as_str().to_string(), current_ip, api_key.as_str().to_string()).await.unwrap();
+                update_zone(zid.clone(), domain.as_str().to_string(), current_ip, disable_proxy.as_ref(), api_key.as_str().to_string()).await.unwrap();
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         }
@@ -180,6 +183,7 @@ async fn main() -> Result<()> {
 
     let domain = Arc::new(args.domain);
     let api_key = Arc::new(args.api_key);
+    let disable_proxy = Arc::new(args.disable_proxy);
     let root_domain = parse_root_domain(domain.to_string());
     let zones = fetch_zones_by_domain(root_domain?, api_key.to_string()).await?;
 
@@ -194,7 +198,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let updater: JoinHandle<Result<()>> = create_updater(current_zone, domain, api_key);
+    let updater: JoinHandle<Result<()>> = create_updater(current_zone, domain, disable_proxy, api_key);
     tokio::try_join!(updater)?;
     Ok(())
 }
