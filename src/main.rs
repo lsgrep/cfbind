@@ -9,13 +9,13 @@ use tokio::task::JoinHandle;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short, long="domain, domain name to be bound to the local device ip address")]
     domain: String,
 
-    #[arg(long)]
+    #[arg(long="disable-proxy, disable Cloudflare proxy")]
     disable_proxy: bool,
 
-    #[arg(short, long)]
+    #[arg(short, long="api_key, Cloudflare API Key with Edit Zones Permissions")]
     api_key: String,
 }
 
