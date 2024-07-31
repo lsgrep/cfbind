@@ -16,7 +16,7 @@ struct Args {
     disable_proxy: bool,
 
     #[arg(short, long="api-key, Cloudflare API Key with Edit Zones Permissions")]
-    api_key: String,
+    api_key: Option<String>,
 }
 
 
@@ -182,7 +182,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let domain = Arc::new(args.domain);
-    let api_key = Arc::new(args.api_key);
+    let api_key = Arc::new(args.api_key.unwrap_or_else(|| std::env::var("CF_API_KEY").unwrap()));
     let disable_proxy = Arc::new(args.disable_proxy);
     let root_domain = parse_root_domain(domain.to_string());
     let zones = fetch_zones_by_domain(root_domain?, api_key.to_string()).await?;
