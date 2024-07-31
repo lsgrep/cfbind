@@ -15,7 +15,7 @@ struct Args {
     #[arg(long="disable-proxy, disable Cloudflare proxy")]
     disable_proxy: bool,
 
-    #[arg(short, long="api-key, Cloudflare API Key with Edit Zones Permissions")]
+    #[arg(short, long="api-key, Cloudflare API Key with Edit Zones Permissions, can also be set as an environment variable CF_API_KEY")]
     api_key: Option<String>,
 }
 
