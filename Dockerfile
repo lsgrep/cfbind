@@ -1,5 +1,5 @@
 # Start with a Rust base image
-FROM rust:1.70 as builder
+FROM rust:1.74 as builder
 
 # Create a new empty shell project
 RUN USER=root cargo new --bin cloudflare-dns-updater
