@@ -26,7 +26,7 @@ FROM debian:buster-slim
 RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Copy the build artifact from the builder stage
-COPY --from=builder /cloudflare-dns-updater/target/release/cfbind .
+COPY --from=builder /cfbind/target/release/cfbind .
 
 # Set the startup command
 ENTRYPOINT ["./cfbind"]
