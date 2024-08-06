@@ -14,3 +14,5 @@ anyhow = "1.0.86"
 tokio = { version = "1.39.2", features = ["full"] }
 url = "2.5.2"
 publicsuffix = "2.2"
+cloudflare = { git = "https://github.com/Wyn-Price/cloudflare-rs", branch = "wyn/zone-details"}
+log = "0.4.22"

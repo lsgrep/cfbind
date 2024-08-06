@@ -5,67 +5,120 @@ use serde::{Deserialize, Serialize};
 use core::option::Option;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
+use anyhow::{anyhow, Context};
+use cloudflare::endpoints::dns::{DnsContent, DnsRecord, Meta};
+use cloudflare::endpoints::zone::Zone;
+use cloudflare::framework::{async_api, Environment, HttpApiClientConfig};
+use cloudflare::framework::auth::Credentials;
+use cloudflare::framework::response::{ApiResponse, ApiSuccess};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long="domain, domain name to be bound to the local device ip address")]
+    #[arg(short, long = "domain, domain name to be bound to the local device ip address")]
     domain: String,
 
-    #[arg(long="disable-proxy, disable Cloudflare proxy")]
+    #[arg(long = "disable-proxy, disable Cloudflare proxy")]
     disable_proxy: bool,
 
-    #[arg(short, long="api-key, Cloudflare API Key with Edit Zones Permissions, can also be set as an environment variable CF_API_KEY")]
+    #[arg(
+        short,
+        long = "api-key, Cloudflare API Key with Edit Zones Permissions, can also be set as an environment variable CF_API_KEY"
+    )]
     api_key: Option<String>,
 }
 
-
-// fetch all the zones for the domain from cloudflare
-#[derive(Deserialize, Debug)]
-struct ZoneResponse {
-    result: Vec<Zone>,
+pub async fn get_zones(api_client: &async_api::Client) -> anyhow::Result<HashMap<String, Zone>> {
+    let result: ApiResponse<Vec<Zone>> = api_client.request(&cloudflare::endpoints::zone::ListZones {
+        params: Default::default(),
+    }).await;
+    match result {
+        Ok(apiResp) => {
+            let zones = apiResp.result;
+            let mut zone_map = HashMap::new();
+            for zone in zones {
+                zone_map.insert(zone.name.clone(), zone);
+            }
+            Ok(zone_map)
+        }
+        Err(e) => {
+            log::error!("Error: {:#?}", e);
+            Err(anyhow::anyhow!("Error: {:#?}", e))
+        }
+    }
 }
 
-#[derive(Deserialize, Clone, Debug)]
-struct Zone {
-    id: String,
-    name: String,
+pub fn root_domain_name(name: String) -> String {
+    let nc = name.clone();
+    let parts = nc.split('.').collect::<Vec<&str>>();
+    if parts.len() <= 2 {
+        nc
+    } else {
+        parts[parts.len() - 2..].join(".")
+    }
 }
 
-#[derive(Serialize, Clone, Deserialize, Debug)]
-struct DNSRecord {
-    id: Option<String>,
-    name: String,
-    content: String,
-    #[serde(rename = "type")]
-    record_type: String,
-    proxied: bool,
-    ttl: u32,
+pub async fn get_zone(api_client: &async_api::Client, name: &str) -> anyhow::Result<Zone> {
+    let mut zones = get_zones(api_client).await?;
+    let root_domain = root_domain_name(name.to_string());
+    zones.remove(&root_domain).context("Zone not found")
 }
 
-#[derive(Deserialize, Debug)]
-struct DNSRecordResponse {
-    result: Vec<DNSRecord>,
-    success: bool,
-    errors: Vec<String>,
-    messages: Vec<String>,
-}
-
-async fn fetch_zones_by_domain(domain: String, api_key: String) -> Result<Option<Zone>> {
-    let client = reqwest::Client::new();
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", api_key))?);
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-    let url = format!("https://api.cloudflare.com/client/v4/zones?name={}", domain);
-    let response: ZoneResponse = client
-        .get(url)
-        .headers(headers)
-        .send()
-        .await?
-        .json()
-        .await?;
+pub async fn get_dns_record(api_client: &async_api::Client, name: &str) -> anyhow::Result<Option<DnsRecord>> {
+    let zone = get_zone(api_client, name).await?;
+    let mut response: ApiSuccess<Vec<DnsRecord>> = api_client.request(&cloudflare::endpoints::dns::ListDnsRecords {
+        zone_identifier: zone.id.as_str(),
+        params: cloudflare::endpoints::dns::ListDnsRecordsParams {
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+    }).await?;
     Ok(response.result.into_iter().next())
+}
+
+pub async fn update_dns_record(api_client: &async_api::Client, name: &str, dns_content: DnsContent, proxied: bool) -> anyhow::Result<()> {
+    let dns_record: Option<DnsRecord> = get_dns_record(api_client, name).await?;
+    let zone = get_zone(api_client, name).await?;
+    log::info!("DNS Record: {:#?}", dns_record);
+    let result = match dns_record {
+        Some(record) => {
+            api_client.request(&cloudflare::endpoints::dns::UpdateDnsRecord {
+                zone_identifier: record.zone_id.as_str(),
+                identifier: record.id.as_str(),
+                params: cloudflare::endpoints::dns::UpdateDnsRecordParams {
+                    ttl: Some(1),
+                    proxied: Some(proxied),
+                    name,
+                    content: dns_content,
+                },
+            }).await
+        }
+        None => {
+            api_client.request(&cloudflare::endpoints::dns::CreateDnsRecord {
+                zone_identifier: zone.id.as_str(),
+                params: cloudflare::endpoints::dns::CreateDnsRecordParams {
+                    name,
+                    content: dns_content,
+                    proxied: Some(proxied),
+                    ttl: Some(1),
+                    priority: None,
+                },
+            }).await
+        }
+    };
+    match result {
+        Ok(apiResp) => {
+            log::info!("DNS Record Updated: {:#?}", apiResp.result);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Error: {:#?}", e);
+            Err(anyhow::anyhow!("Error: {:#?}", e))
+        }
+    }
 }
 
 async fn get_current_ip() -> Result<String> {
@@ -76,129 +129,47 @@ async fn get_current_ip() -> Result<String> {
     Ok(response)
 }
 
-async fn get_dns_record(zone_id: String, name: String, record_type: String, api_key: String) -> Result<Option<DNSRecord>> {
-    let client = reqwest::Client::new();
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", api_key))?);
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let response: DNSRecordResponse = client
-        .get(format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id))
-        .query(&[("name", name), ("type", record_type)])
-        .headers(headers)
-        .send()
-        .await?
-        .json().await?;
 
-    if response.result.len() == 1 {
-        let record = &response.result[0];
-        println!("Record: {:?}", record);
-        return Ok(Some(record.clone()));
-    }
-    return Ok(None);
-}
+fn create_updater(api_key: Arc<String>, domain: Arc<String>, disable_proxy: Arc<bool>) -> JoinHandle<Result<()>> {
+    let creds = Credentials::UserAuthToken { token: api_key.to_string() };
+    let cf_api_client = async_api::Client::new(
+        creds,
+        HttpApiClientConfig::default(),
+        Environment::Production,
+    );
 
-async fn update_zone(zone_id: String, name: String, content: String, disable_proxy: &bool, apy_key: String) -> Result<()> {
-    let mut url = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
-    let client = reqwest::Client::new();
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", apy_key))?);
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-
-    let data: DNSRecord = DNSRecord {
-        id: None,
-        name: name.to_string(),
-        content: content.to_string(),
-        record_type: "A".to_string(),
-        proxied: !disable_proxy,
-        ttl: 1,
-    };
-
-    match get_dns_record(zone_id, name, "A".to_string(), apy_key).await {
-        Ok(Some(record)) => {
-            url = format!("{}/{}", url, record.id.unwrap());
-            let response = client
-                .put(url)
-                .json(&data)
-                .headers(headers)
-                .send()
-                .await?;
-            println!("Response status: {}", response.status());
-            let body = response.text().await?;
-            println!("Response body: {}", body);
-        }
-        Ok(None) => {
-            let response = client
-                .post(url)
-                .json(&data)
-                .headers(headers)
-                .send()
-                .await?;
-            let body = response.text().await?;
-            println!("Response status: {}", body);
+    match cf_api_client {
+        Ok(client) => {
+            tokio::spawn(async move {
+                loop {
+                    let current_ip = get_current_ip().await.unwrap();
+                    log::info!("{}", current_ip);
+                    // parse string as ip
+                    let record = DnsContent::A {
+                        content: Ipv4Addr::from_str(current_ip.as_str())?,
+                    };
+                    update_dns_record(&client, domain.as_str(),
+                                      record, disable_proxy.as_ref().clone()).await.unwrap();
+                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                }
+            })
         }
         Err(e) => {
-            println!("Error: {}", e);
+            tokio::spawn(async move {
+                Err(anyhow!(e))
+            })
         }
     }
-    Ok(())
-}
-
-fn parse_root_domain(domain: String) -> Result<String, Error> {
-    let lower_case_domain = domain.to_lowercase();
-    let url_str = if lower_case_domain.starts_with("http") || lower_case_domain.starts_with("https") {
-        domain.to_string()
-    } else {
-        format!("https://{}", domain)
-    };
-    let host = url::Url::parse(&url_str).unwrap().host_str().ok_or("Invalid domain").unwrap().to_string();
-
-    let parts = host.split('.').collect::<Vec<&str>>();
-    if parts.len() <= 2 {
-        Ok(host)
-    } else {
-        Ok(parts[parts.len() - 2..].join("."))
-    }
-}
-
-fn create_updater(zone: Option<Zone>, domain: Arc<String>, disable_proxy: Arc<bool>, api_key: Arc<String>) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        if let Some(zone) = zone {
-            let zid = zone.id.clone();
-            loop {
-                let current_ip = get_current_ip().await.unwrap();
-                println!("{}", current_ip);
-                update_zone(zid.clone(), domain.as_str().to_string(), current_ip, disable_proxy.as_ref(), api_key.as_str().to_string()).await.unwrap();
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-            }
-        }
-        Ok(())
-    })
 }
 
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
     let domain = Arc::new(args.domain);
     let api_key = Arc::new(args.api_key.unwrap_or_else(|| std::env::var("CF_API_KEY").unwrap()));
     let disable_proxy = Arc::new(args.disable_proxy);
-    let root_domain = parse_root_domain(domain.to_string());
-    let zones = fetch_zones_by_domain(root_domain?, api_key.to_string()).await?;
-
-    let current_zone = match zones {
-        Some(zone) => {
-            println!("Zone: {:?}", zone);
-            Some(zone)
-        }
-        None => {
-            println!("No zone found for domain: {}", domain.to_string());
-            None
-        }
-    };
-
-    let updater: JoinHandle<Result<()>> = create_updater(current_zone, domain, disable_proxy, api_key);
+    let updater: JoinHandle<Result<()>> = create_updater(api_key, domain, disable_proxy);
     tokio::try_join!(updater)?;
     Ok(())
 }
