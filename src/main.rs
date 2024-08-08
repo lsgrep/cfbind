@@ -1,3 +1,9 @@
+use core::option::Option;
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
+use std::sync::Arc;
+
 use anyhow::{anyhow, Context};
 use anyhow::{Error, Result};
 use clap::{arg, Parser};
@@ -6,13 +12,8 @@ use cloudflare::endpoints::zone::Zone;
 use cloudflare::framework::auth::Credentials;
 use cloudflare::framework::response::{ApiResponse, ApiSuccess};
 use cloudflare::framework::{async_api, Environment, HttpApiClientConfig};
-use core::option::Option;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::Ipv4Addr;
-use std::str::FromStr;
-use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 #[derive(Parser, Debug)]
