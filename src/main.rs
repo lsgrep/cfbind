@@ -9,10 +9,10 @@ use anyhow::{Error, Result};
 use clap::{arg, Parser};
 use cloudflare::endpoints::dns::{DnsContent, DnsRecord, Meta};
 use cloudflare::endpoints::zone::Zone;
+use cloudflare::framework::{async_api, Environment, HttpApiClientConfig};
 use cloudflare::framework::auth::Credentials;
 use cloudflare::framework::response::{ApiResponse, ApiSuccess};
-use cloudflare::framework::{async_api, Environment, HttpApiClientConfig};
-use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
@@ -176,8 +176,8 @@ fn create_updater(
                         record,
                         disable_proxy.as_ref().clone(),
                     )
-                    .await
-                    .unwrap();
+                        .await
+                        .unwrap();
                     tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
                 }
             })
